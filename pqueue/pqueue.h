@@ -110,6 +110,8 @@ int pqueue_remove(pqueue_t *q, void *d);
  */
 void *pqueue_peek(pqueue_t *q);
 
+void *cost_benefit_select(pqueue_t *q);
+
 // /**
 //  * print the queue
 //  * @internal

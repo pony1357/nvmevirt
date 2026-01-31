@@ -6,6 +6,7 @@
 
 #include "../nvmev.h"
 #include "pqueue.h"
+#include "../conv_ftl.h"
 
 #define left(i) ((i) << 1)
 #define right(i) (((i) << 1) + 1)
@@ -143,11 +144,24 @@ void pqueue_change_priority(pqueue_t *q, pqueue_pri_t new_pri, void *d)
 
 int pqueue_remove(pqueue_t *q, void *d)
 {
+	// 1. 삭제할 데이터(d)가 현재 큐의 몇 번째 인덱스(posn)에 있는지 찾기
 	size_t posn = q->getpos(d);
+
+// 2. [중요] 큐의 맨 마지막에 있는 데이터를 삭제할 위치(posn)로 끌어오기
+// 그리고 큐의 전체 크기(size)를 1 줄이기 (--q->size)
 	q->d[posn] = q->d[--q->size];
+
+
+	// 3. 맨 뒤에서 옮겨온 데이터가 새로운 자리(posn)에서 
+  // 위로 올라가야 할지(bubble_up), 아래로 내려가야 할지(percolate_down) 결정
+  
+  // 만약 삭제된 원래 데이터(d)의 우선순위보다 
+  // 새로 옮겨온 데이터(q->d[posn])의 우선순위가 더 높다면 (cmppri 결과에 따라)
 	if (q->cmppri(q->getpri(d), q->getpri(q->d[posn])))
+	// 부모 노드들과 비교하며 위로 올리기
 		bubble_up(q, posn);
 	else
+	// 자식 노드들과 비교하며 아래로 내리기
 		percolate_down(q, posn);
 
 	return 0;
@@ -170,11 +184,63 @@ void *pqueue_pop(pqueue_t *q)
 void *pqueue_peek(pqueue_t *q)
 {
 	void *d;
-
+	
 	if (!q || q->size == 1)
 		return NULL;
 	d = q->d[1];
+
+	printk("CB_DEBUG: Selected VPC %u, IPC %u, pos %zu\n", ((struct line*)d)->vpc, ((struct line*)d)->ipc, ((struct line*)d)->pos);
 	return d;
+}
+
+void *cost_benefit_select(pqueue_t *q){
+	struct line *min_line;
+	uint64_t min_res, now;
+	size_t i;
+
+	printk("Queue Size: %zu\n", pqueue_size(q));
+
+	if (!q || q->size == 1)
+		return NULL;
+
+	min_line = NULL;
+	min_res = 0xFFFFFFFFFFFFFFFF;
+	now = ktime_get_ns();
+	 
+	for (i=1; i<q->size; i++){
+		struct line *curr = (struct line *)q->d[i];
+		uint64_t age, age_lvl, res;
+		age = now - curr->age;
+		do_div(age, 1000000000);
+
+		// fio 실행시간 고려
+		if (age <= 10) age_lvl = 1;
+		else if (age <= 20) age_lvl = 2;
+		else if (age <= 45) age_lvl = 3;
+		else if (age <= 90) age_lvl = 4;
+		else if (age <= 180) age_lvl = 5;
+		else if (age <= 360) age_lvl = 6;
+		else age_lvl = 7;
+
+		res = (uint64_t)(curr->vpc);
+		res <<= 10;
+		do_div(res, (uint32_t)(curr->ipc) * age_lvl);
+		
+		
+		if (res < min_res){
+			min_res = res;
+			min_line = curr;
+		}	
+	}
+	if (min_line == NULL) {
+    // 이게 찍힌다면 계산식 문제로 아무것도 못 고른 겁니다.
+    printk("CB_DEBUG: Loop finished but min_line is NULL! min_res was %llu\n", min_res);
+  } else {
+    // 이게 찍힌다면 삭제(remove) 로직 문제입니다.
+    printk("CB_DEBUG: Selected VPC %u, IPC %u, pos %zu\n", min_line->vpc, min_line->ipc, (size_t)min_line->pos);
+  }
+
+	return (void*)min_line;
 }
 
 #if 0
@@ -221,6 +287,8 @@ void pqueue_print(pqueue_t *q, FILE *out, pqueue_print_entry_f print)
     pqueue_free(dup);
 }
 #endif
+
+
 
 static int subtree_is_valid(pqueue_t *q, int pos)
 {

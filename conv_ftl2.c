@@ -7,11 +7,6 @@
 #include "nvmev.h"
 #include "conv_ftl.h"
 
-#define GC_MODE GREEDY
-#define GREEDY 0
-#define COST_BENEFIT 1
-#define RANDOM 2
-
 static inline bool last_pg_in_wordline(struct conv_ftl *conv_ftl, struct ppa *ppa)
 {
 	struct ssdparams *spp = &conv_ftl->ssd->sp;
@@ -496,60 +491,44 @@ static void mark_page_invalid(struct conv_ftl *conv_ftl, struct ppa *ppa)
 	struct line_mgmt *lm = &conv_ftl->lm;
 	struct nand_block *blk = NULL;
 	struct nand_page *pg = NULL;
-	bool was_full_line = false;  // 이 라인이 방금 전까지 100% 꽉 찬 상태였는지 체크용
+	bool was_full_line = false;
 	struct line *line;
 
-	/* [STEP 1] update corresponding (physical) page status */
-	pg = get_pg(conv_ftl->ssd, ppa);  // 주소(ppa)를 가지고 실제 페이지 객체를 찾음
-	NVMEV_ASSERT(pg->status == PG_VALID);  // 반드시 '유효' 상태여야 무효화가 가능함
-	pg->status = PG_INVALID;  // 상태를 '무효'로 변경 (이제 쓰레기 데이터임)
+	/* update corresponding page status */
+	pg = get_pg(conv_ftl->ssd, ppa);
+	NVMEV_ASSERT(pg->status == PG_VALID);
+	pg->status = PG_INVALID;
 
-	/* [STEP 2] update corresponding (physical) block status */
-	blk = get_blk(conv_ftl->ssd, ppa);  // 해당 페이지가 속한 물리 블록을 찾음
-	NVMEV_ASSERT(blk->ipc >= 0 && blk->ipc < spp->pgs_per_blk);  // 무효 페이지가 0 이상인지 확인 && 무효 페이지 개수가 블록의 전체 페이지 수 미만인지 확인
-	blk->ipc++;			// 블록 내 무효 페이지 수(Invalid Page Count) 1 증가
-	NVMEV_ASSERT(blk->vpc > 0 && blk->vpc <= spp->pgs_per_blk);  // 유효 페이지가 있는지 확인
-	blk->vpc--;  // 블록 내 유효 페이지 수(Valid Page Count) 1 감소
+	/* update corresponding block status */
+	blk = get_blk(conv_ftl->ssd, ppa);
+	NVMEV_ASSERT(blk->ipc >= 0 && blk->ipc < spp->pgs_per_blk);
+	blk->ipc++;
+	NVMEV_ASSERT(blk->vpc > 0 && blk->vpc <= spp->pgs_per_blk);
+	blk->vpc--;
 
-	/* [STEP 3] update corresponding line status */
-	line = get_line(conv_ftl, ppa);  // 해당 페이지가 속한 라인(여러 블록의 묶음)을 찾음
+	/* update corresponding line status */
+	line = get_line(conv_ftl, ppa);
 	NVMEV_ASSERT(line->ipc >= 0 && line->ipc < spp->pgs_per_line);
-
-  // 만약 현재 유효 페이지(vpc)가 전체 페이지 수와 같다면, 이 라인은 방금 전까지 100% 유효한 'Full' 상태였음
 	if (line->vpc == spp->pgs_per_line) {
 		NVMEV_ASSERT(line->ipc == 0);
 		was_full_line = true;
 	}
-	line->ipc++;  // 라인 전체의 무효 페이지 수 1 증가
+	line->ipc++;
 	NVMEV_ASSERT(line->vpc > 0 && line->vpc <= spp->pgs_per_line);
-
-
-	/* [STEP 4] Adjust the position of the victime line in the pq under over-writes */
-	// line->pos는 이 라인이 현재 PQ의 몇 번째 인덱스에 있는지를 나타냄
-  // 0이 아니라는 것은 이미 'victim_line_pq'에 들어있다는 뜻
+	/* Adjust the position of the victime line in the pq under over-writes */
 	if (line->pos) {
 		/* Note that line->vpc will be updated by this call */
-		/* * pqueue_change_priority: PQ 내부에서 이 라인의 순위를 즉시 재조정합니다.
-     * 새로운 우선순위 값으로 'line->vpc - 1'을 전달합니다.
-     * Greedy GC에서는 VPC가 낮을수록 우선순위가 높으므로, 이 라인은 큐의 위쪽(청소 1순위 쪽)으로 이동합니다.
-     * [참고]: 이 함수 호출 내부에서 line->vpc 값도 실제로 1 감소시킵니다.
-     */
 		pqueue_change_priority(lm->victim_line_pq, line->vpc - 1, line);
 	} else {
-		// 만약 PQ에 없다면(Active 라인이거나 Full 리스트에 있다면) 그냥 VPC 숫자만 줄임
 		line->vpc--;
 	}
-		/* [STEP 5] move line: "full" -> "victim" */
 
-		// 방금 전까지 100% 유효했던 라인인데 이제 쓰레기가 1개 생겼다면?
 	if (was_full_line) {
-/* 이 라인은 이제 '완벽함'을 잃었으므로 "Full 리스트"에서 빼서 "Victim PQ"로 던짐 */
-		list_del_init(&line->entry);  // Full 리스트에서 제거
-		lm->full_line_cnt--;  // Full 라인 개수 감소
-
-		// 이제 공식적인 청소 후보가 되었으므로 PQ에 처음으로 삽입
+		/* move line: "full" -> "victim" */
+		list_del_init(&line->entry);
+		lm->full_line_cnt--;
 		pqueue_insert(lm->victim_line_pq, line);
-		lm->victim_line_cnt++;  // Victim 라인 개수 증가
+		lm->victim_line_cnt++;
 	}
 }
 
@@ -669,15 +648,7 @@ static struct line *select_victim_line(struct conv_ftl *conv_ftl, bool force)
 	struct line_mgmt *lm = &conv_ftl->lm;
 	struct line *victim_line = NULL;
 
-	// kimi added
-	if (GC_MODE == GREEDY)
-		victim_line = pqueue_peek(lm->victim_line_pq);
-	else if (GC_MODE == COST_BENEFIT)
-		victim_line = cost_benefit_select(lm->victim_line_pq);
-	else if (GC_MODE == RANDOM)
-	//	victim_line = random_select(lm->victim_line_pq);
-	// kimi added
-
+	victim_line = pqueue_peek(lm->victim_line_pq);
 	if (!victim_line) {
 		return NULL;
 	}
@@ -686,12 +657,7 @@ static struct line *select_victim_line(struct conv_ftl *conv_ftl, bool force)
 		return NULL;
 	}
 
-	if (GC_MODE == GREEDY)
-		pqueue_pop(lm->victim_line_pq);
-	else if (GC_MODE == COST_BENEFIT || GC_MODE == RANDOM)
-		pqueue_remove(lm->victim_line_pq, victim_line);
-
-
+	pqueue_pop(lm->victim_line_pq);
 	victim_line->pos = 0;
 	lm->victim_line_cnt--;
 
@@ -724,66 +690,52 @@ static void clean_one_block(struct conv_ftl *conv_ftl, struct ppa *ppa)
 }
 
 /* here ppa identifies the block we want to clean */
-/* 하나의 flashpg(16KB) 내부에 들어있는 여러 물리 페이지들(4KB)을 검사해서
-   유효한 데이터(PG_VALID)가 있다면 다른 곳으로 이동시키는(GC Write) 함수 */
 static void clean_one_flashpg(struct conv_ftl *conv_ftl, struct ppa *ppa)
 {
-	struct ssdparams *spp = &conv_ftl->ssd->sp; // SSD의 물리적 특성 파라미터 가져오기
-	struct convparams *cpp = &conv_ftl->cp;  // FTL 설정값 가져오기
-	struct nand_page *pg_iter = NULL;   // 페이지를 하나씩 살펴볼 반복자
-	int cnt = 0, i = 0;  // 유효 페이지 개수(cnt)와 루프 변수(i)
-	uint64_t completed_time = 0; // 작업 완료 예상 시간
-	struct ppa ppa_copy = *ppa;  // 원본 주소를 복사해서 사용 (주소 조작용)
+	struct ssdparams *spp = &conv_ftl->ssd->sp;
+	struct convparams *cpp = &conv_ftl->cp;
+	struct nand_page *pg_iter = NULL;
+	int cnt = 0, i = 0;
+	uint64_t completed_time = 0;
+	struct ppa ppa_copy = *ppa;
 
-	// [STEP 1] 현재 flash page 안에 유효한 데이터가 몇 개 있는지 먼저 스캔
 	for (i = 0; i < spp->pgs_per_flashpg; i++) {
-		pg_iter = get_pg(conv_ftl->ssd, &ppa_copy); // 현재 물리 주소(ppa_copy)의 페이지 객체 획득
-
+		pg_iter = get_pg(conv_ftl->ssd, &ppa_copy);
 		/* there shouldn't be any free page in victim blocks */
 		NVMEV_ASSERT(pg_iter->status != PG_FREE);
-
-		/* 만약 페이지가 VALID status라면 카운트 증가 */
-		if (pg_iter->status == PG_VALID){
+		if (pg_iter->status == PG_VALID)
 			cnt++;
-		}
 
-		ppa_copy.g.pg++; // 다음 페이지 주소로 이동
+		ppa_copy.g.pg++;
 	}
 
-	ppa_copy = *ppa; // 다시 처음 주소로 복구
+	ppa_copy = *ppa;
 
-	/* 유효한 데이터가 하나도 없으면 복사할 필요가 없으므로 바로 함수 종료 */
 	if (cnt <= 0)
 		return;
 
-	// [STEP 2] 유효한 데이터 읽기 작업 시뮬레이션 (지연 시간 반영)
 	if (cpp->enable_gc_delay) {
 		struct nand_cmd gcr = {
 			.type = GC_IO,
-			.cmd = NAND_READ,  // 유효 데이터를 읽어야 이사를 보내므로 READ 명령
+			.cmd = NAND_READ,
 			.stime = 0,
-			.xfer_size = spp->pgsz * cnt,  // 유효 페이지 개수만큼 데이터 크기 설정
+			.xfer_size = spp->pgsz * cnt,
 			.interleave_pci_dma = false,
 			.ppa = &ppa_copy,
 		};
-		// 낸드 장치에 읽기 명령을 보내고 완료 시간을 계산
 		completed_time = ssd_advance_nand(conv_ftl->ssd, &gcr);
 	}
 
-	/* [STEP 3] 유효한 데이터를 실제로 새로운 장소로 기록(Copy-Back) */
 	for (i = 0; i < spp->pgs_per_flashpg; i++) {
 		pg_iter = get_pg(conv_ftl->ssd, &ppa_copy);
 
 		/* there shouldn't be any free page in victim blocks */
-		/* 다시 확인해서 유효한 페이지인 경우에만 이사(gc_write_page) 실행 */
 		if (pg_iter->status == PG_VALID) {
 			/* delay the maptbl update until "write" happens */
-			/* 이 함수가 새로운 빈 블록을 찾아 데이터를 쓰고 매핑 테이블 업데이트 */
 			gc_write_page(conv_ftl, &ppa_copy);
-			conv_ftl->pg_cnt++;
 		}
 
-		ppa_copy.g.pg++; // 다음 페이지로 이동
+		ppa_copy.g.pg++;
 	}
 }
 
@@ -801,74 +753,53 @@ static void mark_line_free(struct conv_ftl *conv_ftl, struct ppa *ppa)
 static int do_gc(struct conv_ftl *conv_ftl, bool force)
 {
 	struct line *victim_line = NULL;
-	struct ssdparams *spp = &conv_ftl->ssd->sp; 
-	struct ppa ppa; // 물리 주소 구조체
+	struct ssdparams *spp = &conv_ftl->ssd->sp;
+	struct ppa ppa;
 	int flashpg;
 
-	// 이 로그가 찍히는데 gc_cnt가 안 올라가면 후보가 없는 것
-  printk("[GC_TRACE] Attempting GC... Free:%d, Full:%d, Victim_PQ:%zu\n", 
-            conv_ftl->lm.free_line_cnt, conv_ftl->lm.full_line_cnt, pqueue_size(conv_ftl->lm.victim_line_pq));
-
-	// Select GC line.
 	victim_line = select_victim_line(conv_ftl, force);
 	if (!victim_line) {
-		return -1; // Exit if the line doesn't exist.
+		return -1;
 	}
 
-	conv_ftl->gc_cnt++;
-
-	ppa.g.blk = victim_line->id; // 선택된 Victim 라인의 ID를 물리 블록 번호로 설정
-
-	// 현재 GC 상태(IPC, VPC, 프리 라인 개수 등)를 디버그 메시지로 출력
+	ppa.g.blk = victim_line->id;
 	NVMEV_DEBUG_VERBOSE("GC-ing line:%d,ipc=%d(%d),victim=%d,full=%d,free=%d\n", ppa.g.blk,
 		    victim_line->ipc, victim_line->vpc, conv_ftl->lm.victim_line_cnt,
 		    conv_ftl->lm.full_line_cnt, conv_ftl->lm.free_line_cnt);
 
-	// ipc 만큼 나중에 데이터를 더 쓸 수 있도록 '크레딧'을 보충
 	conv_ftl->wfc.credits_to_refill = victim_line->ipc;
 
 	/* copy back valid data */
-	// 라인 내의 모든 플래시 페이지(flashpg) 순회
 	for (flashpg = 0; flashpg < spp->flashpgs_per_blk; flashpg++) {
 		int ch, lun;
 
-		ppa.g.pg = flashpg * spp->pgs_per_flashpg; // 현재 조사할 페이지 번호 설정
-
-		// 병렬 구조(Channel, LUN)를 모두 돌면서 데이터 확인
+		ppa.g.pg = flashpg * spp->pgs_per_flashpg;
 		for (ch = 0; ch < spp->nchs; ch++) {
 			for (lun = 0; lun < spp->luns_per_ch; lun++) {
 				struct nand_lun *lunp;
 
 				ppa.g.ch = ch;
 				ppa.g.lun = lun;
-				ppa.g.pl = 0;  // Plane 설정 (보통 0)
-
-				lunp = get_lun(conv_ftl->ssd, &ppa); // 해당 물리 위치의 LUN 객체 가져오기
-
-				// [핵심] 유효한 데이터가 있다면 다른 곳으로 복사 후 페이지 비우기
-				// 'Valid Page Copy' 발생
+				ppa.g.pl = 0;
+				lunp = get_lun(conv_ftl->ssd, &ppa);
 				clean_one_flashpg(conv_ftl, &ppa);
 
-				// 해당 블록의 마지막 페이지까지 다 확인했으면 
 				if (flashpg == (spp->flashpgs_per_blk - 1)) {
 					struct convparams *cpp = &conv_ftl->cp;
 
-					// 블록을 프리상태로 표시
 					mark_block_free(conv_ftl, &ppa);
 
-					// GC 지연 시뮬레이션이 활성화되어 있다면 실제로 NAND 소거(Erase) 명령 보내기
 					if (cpp->enable_gc_delay) {
 						struct nand_cmd gce = {
 							.type = GC_IO,
-							.cmd = NAND_ERASE,  // NAND 소거 명령
+							.cmd = NAND_ERASE,
 							.stime = 0,
 							.interleave_pci_dma = false,
 							.ppa = &ppa,
 						};
-						ssd_advance_nand(conv_ftl->ssd, &gce);  // 실제/가상 낸드에 소거 수행
+						ssd_advance_nand(conv_ftl->ssd, &gce);
 					}
 
-					// LUN이 다시 사용 가능해지는 시간 업데이트
 					lunp->gc_endtime = lunp->next_lun_avail_time;
 				}
 			}
@@ -876,7 +807,6 @@ static int do_gc(struct conv_ftl *conv_ftl, bool force)
 	}
 
 	/* update line status */
-	// 전체 라인을 프리 라인 풀(Free pool)로 되돌려주어 다시 쓸 수 있게 만듦
 	mark_line_free(conv_ftl, &ppa);
 
 	return 0;
@@ -1045,42 +975,23 @@ static bool conv_write(struct nvmev_ns *ns, struct nvmev_request *req, struct nv
 
 		conv_ftl = &conv_ftls[lpn % nr_parts];
 		local_lpn = lpn / nr_parts;
-
-		/* [중요 포인트 A: 덮어쓰기 발생!] */
-    /* 7. 기존 맵 확인: 이 LPN이 예전에 쓰인 적이 있는지 매핑 테이블을 뒤져봅니다. */
 		ppa = get_maptbl_ent(
 			conv_ftl, local_lpn); // Check whether the given LPN has been written before
 		if (mapped_ppa(&ppa)) {
 			/* update old page information first */
-			/* 8. 무효화(Invalidate): 이전에 쓰였던 물리 주소(old ppa)를 무효 처리
-       * [PQ 영향]: 이 순간 해당 라인의 VPC가 1 감소
-       * Greedy 알고리즘에 의해 이 라인은 PQ 내에서 '더 매력적인 청소 후보'가 되어 위로 올라감 
-       * Cost-Benefit에서는 여기서 'age'를 계산하여 이 라인이 Hot인지 Cold인지 판단 */
-			if (GC_MODE == COST_BENEFIT){
-				// kimi added
-				struct line *line = get_line(conv_ftl, &ppa);
-				line->age = ktime_get_ns();
-				// kimi added
-			}
-
 			mark_page_invalid(conv_ftl, &ppa);
-			set_rmap_ent(conv_ftl, INVALID_LPN, &ppa); // 역매핑 테이블도 무효화
+			set_rmap_ent(conv_ftl, INVALID_LPN, &ppa);
 			NVMEV_DEBUG("%s: %lld is invalid, ", __func__, ppa2pgidx(conv_ftl, &ppa));
 		}
 
 		/* new write */
-		/* 9. 새 페이지 할당: 데이터를 실제로 저장할 새로운 빈 물리 공간(ppa)을 할당받습니다. */
 		ppa = get_new_page(conv_ftl, USER_IO);
-
 		/* update maptbl */
-		/* 10. 매핑 업데이트: "이제 이 LPN은 이 PPA에 들어있다"고 장부(maptbl, rmap)를 갱신합니다. */
 		set_maptbl_ent(conv_ftl, local_lpn, &ppa);
 		NVMEV_DEBUG("%s: got new ppa %lld, ", __func__, ppa2pgidx(conv_ftl, &ppa));
 		/* update rmap */
 		set_rmap_ent(conv_ftl, local_lpn, &ppa);
 
-		/* 11. 유효화(Validate): 새 PPA에 데이터가 들어왔으므로 유효 상태로 마킹합니다. 
-     * [PQ 영향]: 이 라인이 속한 새로운 라인의 VPC가 1 증가합니다. */
 		mark_page_valid(conv_ftl, &ppa);
 
 		/* need to advance the write pointer here */
@@ -1126,8 +1037,6 @@ static void conv_flush(struct nvmev_ns *ns, struct nvmev_request *req, struct nv
 	}
 
 	NVMEV_DEBUG_VERBOSE("%s: latency=%llu\n", __func__, latest - start);
-
-	NVMEV_INFO("GC count: %llu\tCopy Page(4KB) Count: %llu\n", (unsigned long long)conv_ftls->gc_cnt, (unsigned long long)conv_ftls->pg_cnt);
 
 	ret->status = NVME_SC_SUCCESS;
 	ret->nsecs_target = latest;

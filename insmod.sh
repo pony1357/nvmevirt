@@ -1,0 +1,1 @@
+sudo insmod ./nvmev.ko memmap_start=2G memmap_size=1G cpus=2,3

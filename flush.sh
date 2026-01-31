@@ -1,0 +1,1 @@
+sudo nvme flush /dev/nvme0n1 -n 1 D
