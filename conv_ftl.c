@@ -815,6 +815,12 @@ static int do_gc(struct conv_ftl *conv_ftl, bool force)
 		return -1; // Exit if the line doesn't exist.
 	}
 
+	printk("[GC_DEBUG] Line ID: %d, VPC: %u, IPC: %u, SUM: %u, Target_SUM: %lu\n",
+       victim_line->id, 
+       victim_line->vpc, 
+       victim_line->ipc, 
+       (victim_line->vpc + victim_line->ipc),
+       spp->pgs_per_line); // 이 값이랑 SUM이 같아야 함
 	conv_ftl->gc_cnt++;
 
 	ppa.g.blk = victim_line->id; // 선택된 Victim 라인의 ID를 물리 블록 번호로 설정
@@ -1119,6 +1125,8 @@ static void conv_flush(struct nvmev_ns *ns, struct nvmev_request *req, struct nv
 	uint32_t i;
 	struct conv_ftl *conv_ftls = (struct conv_ftl *)ns->ftls;
 
+	uint64_t gc_cnts = 0, pg_cnts = 0;
+	
 	start = local_clock();
 	latest = start;
 	for (i = 0; i < ns->nr_parts; i++) {
@@ -1127,7 +1135,12 @@ static void conv_flush(struct nvmev_ns *ns, struct nvmev_request *req, struct nv
 
 	NVMEV_DEBUG_VERBOSE("%s: latency=%llu\n", __func__, latest - start);
 
-	NVMEV_INFO("GC count: %llu\tCopy Page(4KB) Count: %llu\n", (unsigned long long)conv_ftls->gc_cnt, (unsigned long long)conv_ftls->pg_cnt);
+	
+   for (i = 0; i < ns->nr_parts; i++) {
+      gc_cnts += conv_ftls[i].gc_cnt;
+      pg_cnts += conv_ftls[i].pg_cnt;
+   }
+   NVMEV_INFO("GC count: %llu\tCopy Page(4KB) Count: %llu\n", gc_cnts, pg_cnts);
 
 	ret->status = NVME_SC_SUCCESS;
 	ret->nsecs_target = latest;
