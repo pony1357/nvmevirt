@@ -4,6 +4,7 @@
  * All rights reserved.
  */
 
+#include <linux/prandom.h>
 #include "../nvmev.h"
 #include "pqueue.h"
 #include "../conv_ftl.h"
@@ -188,8 +189,6 @@ void *pqueue_peek(pqueue_t *q)
 	if (!q || q->size == 1)
 		return NULL;
 	d = q->d[1];
-
-	printk("CB_DEBUG: Selected VPC %u, IPC %u, pos %zu\n", ((struct line*)d)->vpc, ((struct line*)d)->ipc, ((struct line*)d)->pos);
 	return d;
 }
 
@@ -241,6 +240,19 @@ void *cost_benefit_select(pqueue_t *q){
   }
 
 	return (void*)min_line;
+}
+
+void *random_select(pqueue_t *q){
+	void *d;
+	unsigned int rand;
+	
+	if (!q || q->size == 1)
+		return NULL;
+	
+	rand = prandom_u32() % (q->size-1) + 1;
+
+	d = q->d[rand];
+	return d;
 }
 
 #if 0

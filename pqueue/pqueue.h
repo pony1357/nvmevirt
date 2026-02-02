@@ -112,6 +112,8 @@ void *pqueue_peek(pqueue_t *q);
 
 void *cost_benefit_select(pqueue_t *q);
 
+void *random_select(pqueue_t *q);
+
 // /**
 //  * print the queue
 //  * @internal

@@ -7,7 +7,7 @@
 #include "nvmev.h"
 #include "conv_ftl.h"
 
-#define GC_MODE GREEDY
+#define GC_MODE COST_BENEFIT
 #define GREEDY 0
 #define COST_BENEFIT 1
 #define RANDOM 2
@@ -675,7 +675,7 @@ static struct line *select_victim_line(struct conv_ftl *conv_ftl, bool force)
 	else if (GC_MODE == COST_BENEFIT)
 		victim_line = cost_benefit_select(lm->victim_line_pq);
 	else if (GC_MODE == RANDOM)
-	//	victim_line = random_select(lm->victim_line_pq);
+		victim_line = random_select(lm->victim_line_pq);
 	// kimi added
 
 	if (!victim_line) {
@@ -805,9 +805,6 @@ static int do_gc(struct conv_ftl *conv_ftl, bool force)
 	struct ppa ppa; // 물리 주소 구조체
 	int flashpg;
 
-	// 이 로그가 찍히는데 gc_cnt가 안 올라가면 후보가 없는 것
-  printk("[GC_TRACE] Attempting GC... Free:%d, Full:%d, Victim_PQ:%zu\n", 
-            conv_ftl->lm.free_line_cnt, conv_ftl->lm.full_line_cnt, pqueue_size(conv_ftl->lm.victim_line_pq));
 
 	// Select GC line.
 	victim_line = select_victim_line(conv_ftl, force);
@@ -815,12 +812,7 @@ static int do_gc(struct conv_ftl *conv_ftl, bool force)
 		return -1; // Exit if the line doesn't exist.
 	}
 
-	printk("[GC_DEBUG] Line ID: %d, VPC: %u, IPC: %u, SUM: %u, Target_SUM: %lu\n",
-       victim_line->id, 
-       victim_line->vpc, 
-       victim_line->ipc, 
-       (victim_line->vpc + victim_line->ipc),
-       spp->pgs_per_line); // 이 값이랑 SUM이 같아야 함
+
 	conv_ftl->gc_cnt++;
 
 	ppa.g.blk = victim_line->id; // 선택된 Victim 라인의 ID를 물리 블록 번호로 설정

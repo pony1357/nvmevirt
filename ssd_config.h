@@ -68,15 +68,15 @@ enum {
 #define NS_SSD_TYPE_1 NS_SSD_TYPE_0
 #define NS_CAPACITY_1 (0)
 #define MDTS (6)
-#define CELL_MODE (CELL_MODE_MLC)
+#define CELL_MODE (CELL_MODE_TLC)
 
 #define SSD_PARTITIONS (4)
-#define NAND_CHANNELS (8)
-#define LUNS_PER_NAND_CH (2)
+#define NAND_CHANNELS (4)
+#define LUNS_PER_NAND_CH (4)
 #define PLNS_PER_LUN (1)
-#define FLASH_PAGE_SIZE KB(32)
-#define ONESHOT_PAGE_SIZE (FLASH_PAGE_SIZE * 1)
-#define BLKS_PER_PLN (8192)
+#define FLASH_PAGE_SIZE KB(16)
+#define ONESHOT_PAGE_SIZE (FLASH_PAGE_SIZE * 3)
+#define BLKS_PER_PLN (1024)
 #define BLK_SIZE (0) /*BLKS_PER_PLN should not be 0 */
 static_assert((ONESHOT_PAGE_SIZE % FLASH_PAGE_SIZE) == 0);
 
@@ -86,23 +86,32 @@ static_assert((ONESHOT_PAGE_SIZE % FLASH_PAGE_SIZE) == 0);
 #define NAND_CHANNEL_BANDWIDTH (800ull) //MB/s
 #define PCIE_BANDWIDTH (3360ull) //MB/s
 
-//#define NAND_4KB_READ_LATENCY_LSB (35760 - 6000) //ns
-//#define NAND_4KB_READ_LATENCY_MSB (35760 + 6000) //ns
-//#define NAND_4KB_READ_LATENCY_CSB (0) //not used
-//#define NAND_READ_LATENCY_LSB (36013 - 6000)
-//#define NAND_READ_LATENCY_MSB (36013 + 6000)
-//#define NAND_READ_LATENCY_CSB (0) //not used
-//#define NAND_PROG_LATENCY (185000)
-//#define NAND_ERASE_LATENCY (0)
+#define NAND_4KB_READ_LATENCY_LSB (35760 - 6000) //ns
+#define NAND_4KB_READ_LATENCY_MSB (35760 + 6000) //ns
+#define NAND_4KB_READ_LATENCY_CSB (35760) //not used
+#define NAND_READ_LATENCY_LSB (36013 - 6000)
+#define NAND_READ_LATENCY_MSB (36013 + 6000)
+#define NAND_READ_LATENCY_CSB (36013) //not used
+#define NAND_PROG_LATENCY (185000)
+#define NAND_ERASE_LATENCY (0)
 
-#define NAND_4KB_READ_LATENCY_LSB (1) //ns
-#define NAND_4KB_READ_LATENCY_MSB (1) //ns
-#define NAND_4KB_READ_LATENCY_CSB (1) //not used
-#define NAND_READ_LATENCY_LSB (1)
-#define NAND_READ_LATENCY_MSB (1)
-#define NAND_READ_LATENCY_CSB (1) //not used
-#define NAND_PROG_LATENCY (1)
-#define NAND_ERASE_LATENCY (1)
+//LG:SLC portion in percentage
+#define SLC_PORTION (10)
+#define SLC_BLKS (BLKS_PER_PLN * SLC_PORTION / 100)
+#define SLC_ONESHOT_PAGE_SIZE KB(16)
+#define NAND_4KB_READ_LATENCY_SLC (16254)
+#define NAND_READ_LATENCY_SLC (16369)
+#define NAND_PROG_LATENCY_SLC (40547)
+#define NAND_ERASE_LATENCY_SLC (0)
+
+//#define NAND_4KB_READ_LATENCY_LSB (1) //ns
+//#define NAND_4KB_READ_LATENCY_MSB (1) //ns
+//#define NAND_4KB_READ_LATENCY_CSB (1) //not used
+//#define NAND_READ_LATENCY_LSB (1)
+//#define NAND_READ_LATENCY_MSB (1)
+//#define NAND_READ_LATENCY_CSB (1) //not used
+//#define NAND_PROG_LATENCY (1)
+//#define NAND_ERASE_LATENCY (1)
 
 #define FW_4KB_READ_LATENCY (21500)
 #define FW_READ_LATENCY (30490)
