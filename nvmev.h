@@ -265,7 +265,7 @@ struct nvmev_dev {
 
 struct nvmev_request {
 	struct nvme_command *cmd;
-	uint32_t sq_id;
+	uint32_t sq_id; // submission queue 식별자 -> 맞는 completion queue에 응답하기 위함
 	uint64_t nsecs_start;
 };
 
@@ -275,22 +275,22 @@ struct nvmev_result {
 };
 
 struct nvmev_ns {
-	uint32_t id;
-	uint32_t csi;
-	uint64_t size;
-	void *mapped;
+	uint32_t id; // 네임스페이스 식별자
+	uint32_t csi; // Command Set Identifier
+	uint64_t size; // 네임스페이스 용량
+	void *mapped; // 가상 NAND CHIP의 시작 주소
 
 	/*conv ftl or zns or kv*/
-	uint32_t nr_parts; // partitions
+	uint32_t nr_parts; // 해당 네임스페이스가 가지는 partition 수
 	void *ftls; // ftl instances. one ftl per partition
 
-	/*io command handler*/
+	/*io command handler*/  // nvmev_request로 I/O request 들어왔을 때 가장 먼저 실행됨
 	bool (*proc_io_cmd)(struct nvmev_ns *ns, struct nvmev_request *req,
 			    struct nvmev_result *ret);
 
-	/*specific CSS io command identifier*/
+	/*specific CSS io command identifier*/  // 들어온 명령이 이 네임스페이스가 처리할 수 있는 명령인지 식별 (ex. 일반 NS -> 일반 Read/Write만 수락)
 	bool (*identify_io_cmd)(struct nvmev_ns *ns, struct nvme_command cmd);
-	/*specific CSS io command processor*/
+	/*specific CSS io command processor*/  // 실제로 I/O 수행하는 핵심 함수 (주소변환 & 지연시간 계산 & Status 반환)
 	unsigned int (*perform_io_cmd)(struct nvmev_ns *ns, struct nvme_command *cmd,
 				       uint32_t *status);
 };

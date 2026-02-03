@@ -56,17 +56,18 @@ struct write_flow_control {
 	uint32_t credits_to_refill;
 };
 
-struct conv_ftl {
-	struct ssd *ssd;
+struct conv_ftl {  // 각 partition의 LBA -> PPA
+	struct ssd *ssd; // FTL이 관리하는 물리 SSD 장치 객체에 대한 포인터
 
-	struct convparams cp;
-	struct ppa *maptbl; /* page level mapping table */
-	uint64_t *rmap; /* reverse mapptbl, assume it's stored in OOB */
-	struct write_pointer wp;
-	struct write_pointer gc_wp;
+	struct convparams cp; // FTL 운영에 필요한 파라미터 모음 (Threshold, OP)
+	struct ppa *maptbl; /* page(4KB) level mapping table */
+	uint64_t *rmap; /* reverse mapptbl, assume it's stored in OOB */   // GC할 때 사용, DRAM이 아니라 낸드 페이지의 남는 공간(Out-Of-Band)에 저장
+	struct write_pointer wp; // Write pointer: 현재 데이터를 쓰고 있는 지점 (Offset: 4KB)
+	struct write_pointer gc_wp; // GC-Write pointer: GC한 데이터들을 따로 모아놓아야 hot/cold 어느정도 따로 저장됨
 	struct line_mgmt lm;
-	struct write_flow_control wfc;
+	struct write_flow_control wfc; // write credit: line별 남은 페이지수, 쓰기흐름 제어장치 - 호스트의 요청속도를 GC 속도가 못따라가면 SSD가 뻗어버릴 수 있으므로 GC 상태에 따라 호스트의 쓰기 속도 조절하는 용도
 
+	// kimi added
 	uint64_t gc_cnt, pg_cnt;
 };
 

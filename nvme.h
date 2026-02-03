@@ -617,18 +617,18 @@ struct nvme_format_cmd {
 
 struct nvme_command {
 	union {
-		struct nvme_common_command common;
-		struct nvme_rw_command rw;
-		struct nvme_get_log_page_command get_log_page;
-		struct nvme_identify identify;
-		struct nvme_features features;
-		struct nvme_create_cq create_cq;
+		struct nvme_common_command common; // 모든 명령어의 공통부분
+		struct nvme_rw_command rw; // Read or Write
+		struct nvme_get_log_page_command get_log_page; // 원하는 통계 데이터 종류 전달 -> NVMeVirt가 답
+		struct nvme_identify identify; // 장치 정보 확인
+		struct nvme_features features; // SSD 기능 제어
+		struct nvme_create_cq create_cq; // 관리용 큐 생성
 		struct nvme_create_sq create_sq;
-		struct nvme_delete_queue delete_queue;
-		struct nvme_download_firmware dlfw;
-		struct nvme_format_cmd format;
-		struct nvme_dsm_cmd dsm;
-		struct nvme_abort_cmd abort;
+		struct nvme_delete_queue delete_queue; // I/O 큐 삭제
+		struct nvme_download_firmware dlfw; // Download Firmware: 펌웨어를 새 버전으로 교체할 때 사용 (지연시간 연구용)
+		struct nvme_format_cmd format; // SSD의 모든 데이터 초기화 후 새로 세팅
+		struct nvme_dsm_cmd dsm; // 데이터 필요없음 표시
+		struct nvme_abort_cmd abort; // 실행중인 명령어 오래 걸리면 취소 요청
 	};
 };
 

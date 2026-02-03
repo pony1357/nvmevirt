@@ -211,11 +211,11 @@ struct ssdparams {
 };
 
 struct ssd {
-	struct ssdparams sp;
-	struct ssd_channel *ch;
-	struct ssd_pcie *pcie;
-	struct buffer *write_buffer;
-	unsigned int cpu_nr_dispatcher;
+	struct ssdparams sp; // SSD의 모든 물리적 규격 설정값 (채널, 페이지크기, 지연시간 등)
+	struct ssd_channel *ch;  // 채널들의 배열
+	struct ssd_pcie *pcie;  // PCIe interface 및 DMA엔진 추상화 객체
+	struct buffer *write_buffer;  // global WB의 실제 객체
+	unsigned int cpu_nr_dispatcher;  // 시뮬레이션 요청을 처리할 디스패처 스레드의 개수
 };
 
 static inline struct ssd_channel *get_ch(struct ssd *ssd, struct ppa *ppa)
