@@ -405,20 +405,25 @@ static void conv_init_params(struct convparams *cpp)
 void conv_init_namespace(struct nvmev_ns *ns, uint32_t id, uint64_t size, void *mapped_addr,
 			 uint32_t cpu_nr_dispatcher)
 {
-	struct ssdparams spp;
-	struct convparams cpp;
-	struct conv_ftl *conv_ftls;
-	struct ssd *ssd;
+	struct ssdparams spp;  // SSD 물리적특성 parameter
+	struct convparams cpp;  // Conv-FTL parameter
+	struct conv_ftl *conv_ftls;  // Conv-FTL 배열
+	struct ssd *ssd;  // 개별 SSD 파티션 객체
 	uint32_t i;
-	const uint32_t nr_parts = SSD_PARTITIONS;
+	const uint32_t nr_parts = SSD_PARTITIONS;  // SSD를 나눌 파티션 개수 (기본적으로 병렬 처리용)
 
+	/* 1. 파라미터 초기화 */
 	ssd_init_params(&spp, size, nr_parts);
 	conv_init_params(&cpp);
 
+	/* 2. FTL 및 SSD 객체 할당 */
+	// 파티션 개수만큼 FTL 구조체 배열을 커널 메모리에 할당
 	conv_ftls = kmalloc(sizeof(struct conv_ftl) * nr_parts, GFP_KERNEL);
 
 	for (i = 0; i < nr_parts; i++) {
+		// 각 파티션을 담당할 SSD 구조체 할당
 		ssd = kmalloc(sizeof(struct ssd), GFP_KERNEL);
+		// SSD
 		ssd_init(ssd, &spp, cpu_nr_dispatcher);
 		conv_init_ftl(&conv_ftls[i], &cpp, ssd);
 	}
@@ -438,7 +443,7 @@ void conv_init_namespace(struct nvmev_ns *ns, uint32_t id, uint64_t size, void *
 	ns->nr_parts = nr_parts;
 	ns->ftls = (void *)conv_ftls;
 	ns->size = (uint64_t)((size * 100) / cpp.pba_pcent);
-	ns->mapped = mapped_addr;
+	ns->mapped = mapped_addr;  // 가상 SSD의 실제 메모리 시작 주소 저장
 	/*register io command handler*/
 	ns->proc_io_cmd = conv_proc_nvme_io_cmd;
 

@@ -650,7 +650,7 @@ static int nvmev_io_worker(void *data)
 	NVMEV_INFO("%s started on cpu %d (node %d)\n", worker->thread_name, smp_processor_id(),
 		   cpu_to_node(smp_processor_id()));
 
-	while (!kthread_should_stop()) {
+	while (!kthread_should_stop()) {  // 해당 루프를 돌면서 work_queue 감시
 		unsigned long long curr_nsecs_wall = __get_wallclock();
 		unsigned long long curr_nsecs_local = local_clock();
 		long long delta = curr_nsecs_wall - curr_nsecs_local;
