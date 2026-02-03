@@ -258,40 +258,53 @@ static void advance_write_pointer(struct conv_ftl *conv_ftl, uint32_t io_type)
 	/* 이제 현재 블록 내에서 다음 수직 위치로 페이지 번호를 점프시킴 */
 	/* go to next wordline in the block */
 	wpp->pg += spp->pgs_per_oneshotpg;
-	if (wpp->pg != spp->pgs_per_blk)
+	if (wpp->pg != spp->pgs_per_blk) // 블록의 끝에 도달하지 않았다면 다음 워드라인 시작
 		goto out;
 
-	wpp->pg = 0;
+	/* 7. 라인(Line/Superblock) 소모 및 관리 */
+	// 여기까지 왔다면 현재 사용 중인 라인(모든 채널/LUN의 해당 블록들)을 모두 쓴 것
+	wpp->pg = 0;  // 페이지 번호 초기화
+
+	//현재 라인의 유효 페이지 수(vpc)를 확인하여 상태 분류
 	/* move current line to {victim,full} line list */
 	if (wpp->curline->vpc == spp->pgs_per_line) {
 		/* all pgs are still valid, move to full line list */
-		NVMEV_ASSERT(wpp->curline->ipc == 0);
-		list_add_tail(&wpp->curline->entry, &lm->full_line_list);
+		/* 모든 페이지가 유효하다면, 이 라인은 아주 깨끗하게 꽉 찬 상태 (FULL) */
+		NVMEV_ASSERT(wpp->curline->ipc == 0);  // 무효 페이지(ipc)가 0이어야 함
+		list_add_tail(&wpp->curline->entry, &lm->full_line_list);  // Full 라인 리스트에 추가
 		lm->full_line_cnt++;
 		NVMEV_DEBUG_VERBOSE("wpp: move line to full_line_list\n");
 	} else {
+		/* 일부 페이지가 쓰자마자 무효화됨(Overwrite 등): 이 라인은 Victim 후보 */
 		NVMEV_DEBUG_VERBOSE("wpp: line is moved to victim list\n");
-		NVMEV_ASSERT(wpp->curline->vpc >= 0 && wpp->curline->vpc < spp->pgs_per_line);
+		NVMEV_ASSERT(wpp->curline->vpc >= 0 && wpp->curline->vpc < spp->pgs_per_line);  
 		/* there must be some invalid pages in this line */
-		NVMEV_ASSERT(wpp->curline->ipc > 0);
+		NVMEV_ASSERT(wpp->curline->ipc > 0);  // 무효 페이지가 최소 하나는 있어야 함
+		// pqueue에 삽입 (victim 후보)
 		pqueue_insert(lm->victim_line_pq, wpp->curline);
 		lm->victim_line_cnt++;
 	}
+
+	/* 8. 새 라인 할당 */
 	/* current line is used up, pick another empty line */
 	check_addr(wpp->blk, spp->blks_per_pl);
+	// 비어있는 새로운 라인을 할당받음 (Free Line -> Active Line)
 	wpp->curline = get_next_free_line(conv_ftl);
 	NVMEV_DEBUG_VERBOSE("wpp: got new clean line %d\n", wpp->curline->id);
 
-	wpp->blk = wpp->curline->id;
+	wpp->blk = wpp->curline->id;  // 새 블록 번호 업데이트
 	check_addr(wpp->blk, spp->blks_per_pl);
 
+	/* 9. 무결성 검사 */
 	/* make sure we are starting from page 0 in the super block */
 	NVMEV_ASSERT(wpp->pg == 0);
 	NVMEV_ASSERT(wpp->lun == 0);
 	NVMEV_ASSERT(wpp->ch == 0);
 	/* TODO: assume # of pl_per_lun is 1, fix later */
 	NVMEV_ASSERT(wpp->pl == 0);
+
 out:
+	/* 10. 결과 로그 출력 */
 	NVMEV_DEBUG_VERBOSE("advanced wpp: ch:%d, lun:%d, pl:%d, blk:%d, pg:%d (curline %d)\n",
 			wpp->ch, wpp->lun, wpp->pl, wpp->blk, wpp->pg, wpp->curline->id);
 }
@@ -1117,7 +1130,7 @@ static bool conv_write(struct nvmev_ns *ns, struct nvmev_request *req, struct nv
 		advance_write_pointer(conv_ftl, USER_IO);
 
 		/* Aggregate write io in flash page */
-		/* 12. 낸드 실제 쓰기 트리거: 원샷 페이지(TLC/MLC 등)의 마지막 페이지까지 데이터가 모였는지 확인 */
+		/* 12. 낸드 실제 쓰기 트리거: 원샷 페이지의 마지막 페이지까지 데이터가 모였는지 확인 */
 		if (last_pg_in_wordline(conv_ftl, &ppa)) {
 			swr.ppa = &ppa;
 

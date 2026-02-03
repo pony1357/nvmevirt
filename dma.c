@@ -146,6 +146,8 @@ static void result(const char *err, unsigned int n, dma_addr_t src_addr, dma_add
 		 current->comm, n, err, src_addr, dst_addr, len, data);
 }
 
+// Linux Kernel의 DMA Engine API를 사용하여 인텔 I/OAT 하드웨어에 실제 복사작업을 명령
+// CPU 대신 하드웨어가 복사를 수행하도록 설정 (Polled mode, Interrupt mode 모두 지원)
 int ioat_dma_submit(dma_addr_t src_addr, dma_addr_t dst_addr, unsigned int size)
 {
 	struct ioat_dma_thread *thread = &dma_thread;

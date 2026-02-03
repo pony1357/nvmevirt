@@ -48,47 +48,60 @@ static inline size_t __cmd_io_size(struct nvme_rw_command *cmd)
 
 static unsigned int __do_perform_io(int sqid, int sq_entry)
 {
+	// 1. 초기 설정: Submission Queue와 해당 I/O 명령어 가져옴
 	struct nvmev_submission_queue *sq = nvmev_vdev->sqes[sqid];
 	struct nvme_rw_command *cmd = &sq_entry(sq_entry).rw;
-	size_t offset;
-	size_t length, remaining;
-	int prp_offs = 0;
-	int prp2_offs = 0;
-	u64 paddr;
-	u64 *paddr_list = NULL;
-	size_t nsid = cmd->nsid - 1; // 0-based
+	size_t offset;  // 스토리지 내 저장 위치(오프셋)
+	size_t length, remaining;  // 총 길이 및 남은 데이터 양
+	int prp_offs = 0;  // 현재 몇 번째 PRP를 처리 중인지 카운트. PRP(Physical Region Page): 큰 데이터를 나누어 저장할 때의 주소 목록
+	int prp2_offs = 0;  // PRP List 내부의 인덱스
+	u64 paddr;  // 현재 처리할 호스트의 물리 주소
+	u64 *paddr_list = NULL;  // PRP List가 저장된 페이지의 포인터. 호스트 물리주소 리스트(PRP list)가 담겨 있는 페이지를 CPU가 읽을 수 있도록 매핑한 가상주소(포인터)
+	size_t nsid = cmd->nsid - 1; // 0-based   // 네임스페이스 ID
 	bool is_paddr_memremap = false;
 
-	offset = __cmd_io_offset(cmd);
+	// 명령어로부터 '스토리지' 오프셋과 전체 전송 크기를 계산
+	offset = __cmd_io_offset(cmd);  // 가상 SSD 스토리지 내부의 절대 위치
 	length = __cmd_io_size(cmd);
 	remaining = length;
 
+	// 2. 루프: 남은 데이터가 없을 때까지 페이지 단위로 처리
 	while (remaining) {
 		size_t io_size;
-		void *vaddr;
-		size_t mem_offs = 0;
+		void *vaddr;  // 호스트 물리 주소를 커널에서 접근하기 위한 가상 주소
+		size_t mem_offs = 0;  // 페이지 내 시작 오프셋
 		bool is_vaddr_memremap = false;
 
 		prp_offs++;
+		// 2-1. PRP 주소 추출 규칙 적용
 		if (prp_offs == 1) {
+			// 첫 번째 조각은 무조건 PRP1에 주소가 있음
 			paddr = cmd->prp1;
 		} else if (prp_offs == 2) {
+			// 두 번째 조각: 남은 데이터가 1페이지 이하이면 PRP2가 곧 주소, 초과하면 PRP list의 시작 주소임
 			paddr = cmd->prp2;
 			if (remaining > PAGE_SIZE) {
+				// PRP2 주소가 유효한 시스템 메모리(RAM) 범위인지 확인
 				if (pfn_valid(paddr >> PAGE_SHIFT)) {
+					// 시스템 RAM이면 고속 매핑(kmap_atomic) 사용
 					paddr_list = kmap_atomic_pfn(PRP_PFN(paddr)) +
 						(paddr & PAGE_OFFSET_MASK);
 				} else {
+					// RAM이 아니면(ex. 예약된 영역 등) memremap으로 접근 권한 획득
 					paddr_list = memremap(paddr, PAGE_SIZE, MEMREMAP_WT);
 					paddr_list += (paddr & PAGE_OFFSET_MASK);
-					is_paddr_memremap = true;
+					is_paddr_memremap = true;  // 나중에 해제할 때 필요
 				}
+				// PRP List의 첫 번째 항목에서 실제 데이터 주소를 가져옴
 				paddr = paddr_list[prp2_offs++];
 			}
 		} else {
+			// 세 번째 이후 조각은 미리 열어둔 PRP List에서 순차적으로 주소 획득
 			paddr = paddr_list[prp2_offs++];
 		}
 
+		// 2-2. 호스트 물리 주소를 커널 가상 주소로 매핑
+		// 데이터가 저장될 호스트 페이지(paddr)를 커널이 읽고 쓸 수 있게 가상 주소(vaddr)로 매핑
 		if (pfn_valid(paddr >> PAGE_SHIFT)) {
 			vaddr = kmap_atomic_pfn(PRP_PFN(paddr));
 		} else {
@@ -96,35 +109,50 @@ static unsigned int __do_perform_io(int sqid, int sq_entry)
 			is_vaddr_memremap = true;
 		}
 
+		// 이번 루프에서 처리할 크기 결정 (기본적으로 1페이지이나 마지막은 남은 양만큼)
 		io_size = min_t(size_t, remaining, PAGE_SIZE);
 
+		// 만약 주소가 페이지 중간부터 시작한다면 (Alignment 이슈), 오프셋 처리 및 크기 조정
 		if (paddr & PAGE_OFFSET_MASK) {
+			// 페이지 내에서 정확히 몇 바이트 지점에서 시작하는지 계산 (오프셋 추출)
 			mem_offs = paddr & PAGE_OFFSET_MASK;
+			// 이번 루프에서 복사할 크기가 현재 페이지의 경계를 넘어가는지 체크
+			// NVMe PRP 규칙상, 첫 번째 PRP를 제외한 나머지 PRP는 반드시 페이지 시작점(0)부터 시작해야 함
+			// 하지만 첫 번째 PRP는 페이지 중간에서 시작할 수 있고, 해당 페이지의 끝까지만 전송해야 함
 			if (io_size + mem_offs > PAGE_SIZE)
+				// 전송 크기를 현재 페이지의 남은 공간으로 제한
 				io_size = PAGE_SIZE - mem_offs;
 		}
 
+		/* 2-3. 실제 데이터 복사 (CPU memcpy) */
 		if (cmd->opcode == nvme_cmd_write ||
 		    cmd->opcode == nvme_cmd_zone_append) {
+			// Write: 호스트 -> 에뮬레이션된 장치 메모리
 			memcpy(nvmev_vdev->ns[nsid].mapped + offset, vaddr + mem_offs, io_size);
 		} else if (cmd->opcode == nvme_cmd_read) {
+			// Read: 에뮬레이션된 장치 메모리 -> 호스트
 			memcpy(vaddr + mem_offs, nvmev_vdev->ns[nsid].mapped + offset, io_size);
 		}
 
+		// 2-4. 매핑 해제 (메모리 누수 방지)
 		if (vaddr != NULL && !is_vaddr_memremap) {
+			// kmap_atomic 으로 만든 가상 주소 즉시 무효화
 			kunmap_atomic(vaddr);
 			vaddr = NULL;
 		} else if (vaddr != NULL && is_vaddr_memremap) {
+			// memremap으로 매핑한 경우 memunmap 으로 해제
 			memunmap(vaddr);
-			vaddr = NULL;
+			vaddr = NULL;  // 해제 후 포인터를 초기화하여 잘못된 참조 방지
 			is_vaddr_memremap = false;
 		}
 
-		remaining -= io_size;
+		remaining -= io_size;  // 실제 복사한 바이트 수(io_size)만큼 남은 작업량에서 차감
 		offset += io_size;
 	}
 
+	// 3. 사용 완료된 PRP List 페이지 해제
 	if (paddr_list) {
+		// 데이터 페이지와 마찬가지로 매핑 방식에 따라 적절한 해제 함수 호출
 		if (!is_paddr_memremap) 
 			kunmap_atomic(paddr_list);
 		else if (is_paddr_memremap) 
@@ -355,33 +383,44 @@ static void __enqueue_io_req(int sqid, int cqid, int sq_entry, unsigned long lon
 void schedule_internal_operation(int sqid, unsigned long long nsecs_target,
 				 struct buffer *write_buffer, size_t buffs_to_release)
 {
-	struct nvmev_io_worker *worker;
-	struct nvmev_io_work *w;
-	unsigned int entry;
+	struct nvmev_io_worker *worker;  // 이 작업을 처리할 전용 워커 스레드
+	struct nvmev_io_work *w;  // 구체적인 작업 내용을 담을 구조체
+	unsigned int entry;  // 워커의 작업 큐 내에서의 인덱스(번호)
 
+	/* 1. 워커 할당: 해당 Submission Queue(sqid)를 담당하는 I/O 워커와 빈 슬롯을 가져옴 */
 	worker = __allocate_work_queue_entry(sqid, &entry);
 	if (!worker)
-		return;
+		return;  // 빈 자리가 없으면 작업을 등록하지 못하고 종료
 
+	/* 2. 작업 위치 지정: 할당받은 인덱스를 사용해 실제 작업(work) 객체 주소를 얻음 */
 	w = worker->work_queue + entry;
 
+	/* 3. 디버그 로그: 현재 시간 대비 작업이 완료될 목표 시간까지의 남은 지연 시간 출력 */
 	NVMEV_DEBUG_VERBOSE("%s/%u, internal sq %d, %llu + %llu\n", worker->thread_name, entry, sqid,
 		    local_clock(), nsecs_target - local_clock());
 
 	/////////////////////////////////
-	w->sqid = sqid;
+	/* 4. 작업 기본 정보 설정 */
+	w->sqid = sqid;  // 어떤 큐에서 온 명령인지 기록
+	// 시작 시간과 큐에 들어간 시간을 현재 시간으로 기록
 	w->nsecs_start = w->nsecs_enqueue = local_clock();
-	w->nsecs_target = nsecs_target;
-	w->is_completed = false;
-	w->is_copied = true;
-	w->prev = -1;
-	w->next = -1;
+	w->nsecs_target = nsecs_target;  // 낸드 지연 시간이 반영된 "실제 완료될 미래 시간"
+	w->is_completed = false;  // 아직 시작 전이므로 완료 플래그는 거짓
+	w->is_copied = true;  // 데이터 복사가 이미 완료되었음을 표시
+	w->prev = -1;  // 리스트 연결용 (초기값 -1)
+	w->next = -1; // 리스트 연결용 (초기값 -1)
 
-	w->is_internal = true;
-	w->write_buffer = write_buffer;
-	w->buffs_to_release = buffs_to_release;
+	/* 5. 내부 작업 특수 설정 (핵심) */
+	w->is_internal = true;  // 호스트 명령이 아닌 FTL 내부의 "관리용 작업"임을 표시
+	w->write_buffer = write_buffer;  // 작업 완료 시 해제해야 할 쓰기 버퍼의 주소
+	w->buffs_to_release = buffs_to_release;  // 해제할 버퍼의 크기 (데이터 전송 완료 후 빈 공간 확보용)
+
+	/* 6. 메모리 베리어: 멀티코어 환경에서 다른 스레드(워커)가 업데이트된 w의 내용을 즉시 보도록 보장 */
+	// conv-write를 실행하는 코어와 io-worker 스레드가 떠 있는 코어가 다를 수 있기 때문
 	mb(); /* IO worker shall see the updated w at once */
 
+	/* 7. 작업 삽입: 목표 시간(nsecs_target)에 맞춰 정렬된 상태로 워커의 작업 목록에 집어넣음
+	  나중에 워커 스레드는 시간이 빠른 순서대로 이 작업들을 꺼내 처리 */
 	__insert_req_sorted(entry, worker, nsecs_target);
 }
 
