@@ -1,0 +1,12 @@
+fio --filename=/dev/nvme0n1\
+ --ioengine=libaio\
+ --direct=1\
+ --rw=randwrite\
+ --bs=4k\
+ --size=400M\
+ --io_size=5G\
+ --numjobs=1\
+ --norandommap=1\
+ --randrepeat=0\
+ --random_distribution=zipf:1.1\
+ --name gc_test

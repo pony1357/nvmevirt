@@ -1,0 +1,1 @@
+fio --directory=/home/kimi/test_ssd/mnt --direct=1 --ioengine=libaio --rw=write --bs=4k --size=800M --numjobs=1 --name write_test
