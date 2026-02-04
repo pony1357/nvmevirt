@@ -151,13 +151,13 @@ struct ssdparams {
 	int pgsz; /* mapping unit size in bytes*/
 	int pgs_per_flashpg; /* # of pgs per flash page */
 	int flashpgs_per_blk; /* # of flash pages per block */
-	int pgs_per_oneshotpg; /* # of pgs per oneshot page */
-	int oneshotpgs_per_blk; /* # of oneshot pages per block */
-	int pgs_per_blk; /* # of pages per block */
-	int blks_per_pl; /* # of blocks per plane */
-	int pls_per_lun; /* # of planes per LUN (Die) */
-	int luns_per_ch; /* # of LUNs per channel */
-	int nchs; /* # of channels in the SSD */
+	int pgs_per_oneshotpg; /* O# of pgs per oneshot page */
+	int oneshotpgs_per_blk; /* X# of oneshot pages per block */
+	int pgs_per_blk; /* O# of pages per block */
+	int blks_per_pl; /* X# of blocks per plane */
+	int pls_per_lun; /* X# of planes per LUN (Die) */
+	int luns_per_ch; /* X# of LUNs per channel */
+	int nchs; /* X# of channels in the SSD */
 	int cell_mode;
 
 	/* Unit size of NVMe write command

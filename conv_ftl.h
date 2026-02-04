@@ -42,8 +42,8 @@ struct line_mgmt {
 
 	/* free line list, we only need to maintain a list of blk numbers */
 	struct list_head free_line_list; // free: when writing new datas
-	pqueue_t *victim_line_pq; // partially used: 
-	struct list_head full_line_list; // full: cannot write 
+	pqueue_t *victim_line_pq; // partially valid: 
+	struct list_head full_line_list;
 
 	uint32_t tt_lines; // total lines #
 	uint32_t free_line_cnt; // free lines # that can use

@@ -634,47 +634,63 @@ static void __fill_cq_result(struct nvmev_io_work *w)
 	spin_unlock(&cq->entry_lock);
 }
 
-static int nvmev_io_worker(void *data)
+static int nvmev_io_worker(void *data)  // 커널 스레드로 동작, 워크_큐에 쌓인 작업들을 감시하고 처리
 {
+	// 1. 전달받은 데이터를 worker 구조체로 형변환 (각 스레드별 고유 정보)
 	struct nvmev_io_worker *worker = (struct nvmev_io_worker *)data;
 	struct nvmev_ns *ns;
+	// 마지막으로 I/O가 발생한 시간을 기록 (유휴 상태 체크용)
 	static unsigned long last_io_time = 0;
 
 #ifdef PERF_DEBUG
+  // 성능 디버깅용: 인터럽트 처리 시간 및 횟수 기록용 정적 배열
 	static unsigned long long intr_clock[NR_MAX_IO_QUEUE + 1];
 	static unsigned long long intr_counter[NR_MAX_IO_QUEUE + 1];
 
 	unsigned long long prev_clock;
 #endif
 
+  // 스레드 시작 메시지 출력: 어떤 CPU와 노드에서 이 일꾼이 돌아가는지 기록
 	NVMEV_INFO("%s started on cpu %d (node %d)\n", worker->thread_name, smp_processor_id(),
 		   cpu_to_node(smp_processor_id()));
 
+	// 커널 스레드 중지 요청이 올 때까지 무한 루프 실행
 	while (!kthread_should_stop()) {  // 해당 루프를 돌면서 work_queue 감시
+		// 현재 실제 세계의 시간(Wall clock)과 로컬 CPU 시간을 가져와 차이(delta) 계산
 		unsigned long long curr_nsecs_wall = __get_wallclock();
 		unsigned long long curr_nsecs_local = local_clock();
 		long long delta = curr_nsecs_wall - curr_nsecs_local;
 
-		volatile unsigned int curr = worker->io_seq;
+		// 현재 처리해야 할 I/O 작업의 시작 인덱스 (volatile로 최신값 보장)
+		volatile unsigned int curr = worker->io_seq;  // io_seq: worker의 work queue에서 가장 먼저 처리해야 할 work의 index
 		int qidx;
 
+		// work queue를 순회하며 할 일이 있는지 확인
 		while (curr != -1) {
+			// 현재 시간을 나노초 단위로 계산 (로컬 시간 + 월클락 오차 교정)
 			struct nvmev_io_work *w = &worker->work_queue[curr];
 			unsigned long long curr_nsecs = local_clock() + delta;
+			// worker의 마지막 처리 시간을 현재로 갱신
 			worker->latest_nsecs = curr_nsecs;
 
+			// 이미 완료된 작업이면 다음 작업으로 넘어감
 			if (w->is_completed == true) {
 				curr = w->next;
 				continue;
 			}
 
+			/* [데이터 복사 단계] */
+			// 아직 호스트-장치 간 데이터 복사(memcpy)가 안 되었다면 실행
 			if (w->is_copied == false) {
 #ifdef PERF_DEBUG
+				// 복사 시작 시간 기록
 				w->nsecs_copy_start = local_clock() + delta;
 #endif
+				// 내부 관리용 I/O 라면 복사 생략
 				if (w->is_internal) {
 					;
 				} else if (io_using_dma) {
+					// 설정이 DMA 사용 모드라면 DMA 에뮬레이션 함수 호출
 					__do_perform_io_using_dma(w->sqid, w->sq_entry);
 				} else {
 #if (BASE_SSD == KV_PROTOTYPE)
@@ -688,27 +704,38 @@ static int nvmev_io_worker(void *data)
 						__do_perform_io(w->sqid, w->sq_entry);
 					}
 #else 
+					// 일반적인 환경에서 memcpy를 이용한 데이터 전송 실행
 					__do_perform_io(w->sqid, w->sq_entry);
 #endif
 				}
 
 #ifdef PERF_DEBUG
+				// 복사 완료 시간 기록
 				w->nsecs_copy_done = local_clock() + delta;
 #endif
+				// 복사 완료 플래그 설정 (다음 루프에서 중복 복사 방지)
 				w->is_copied = true;
+				// 마지막 I/O 발생 시점을 현재 jiffies(시스템이 부팅된 후 지금까지 몇 번의 타이머 인터럽트가 발생했는지 나타내는 전역 변수)로 갱신
 				last_io_time = jiffies;
 
+				// 디버그 메시지: 어떤 큐의 어떤 항목을 복사했는지 출력
 				NVMEV_DEBUG_VERBOSE("%s: copied %u, %d %d %d\n", worker->thread_name, curr,
 					    w->sqid, w->cqid, w->sq_entry);
 			}
 
+			/* [지연 시간 완료 체크 단계] */
+			// FTL(conv_write 등)이 계산한 목표 시간(nsecs_target)에 도달했는지 확인
 			if (w->nsecs_target <= curr_nsecs) {
 				if (w->is_internal) {
+					// 내부 작업(GC 등) 완료 시 버퍼 자원 해제
+					// 호스트 I/O는 fill-cq-request 를 거쳐 완료됨. 완료를 확인한 상위 모듈이 버퍼를 정리
+					// 반면, 내부작업의 경우 완료 보고할 필요가 없으므로 버퍼만 해제
 #if (SUPPORTED_SSD_TYPE(CONV) || SUPPORTED_SSD_TYPE(ZNS))
 					buffer_release((struct buffer *)w->write_buffer,
 						       w->buffs_to_release);
 #endif
 				} else {
+					// 일반 호스트 I/O라면 완료 큐(CQ)에 결과 기록 (인터럽트 준비)
 					__fill_cq_result(w);
 				}
 
@@ -724,32 +751,44 @@ static int nvmev_io_worker(void *data)
 					     w->nsecs_cq_filled - w->nsecs_start,
 					     w->nsecs_target - w->nsecs_start);
 #endif
+				// 메모리 베리어: 다른 CPU나 프로세스가 이 작업의 완료 상태를 즉시 보도록 보장
 				mb(); /* Reclaimer shall see after here */
+				// 최종 완료 플래그 설정
 				w->is_completed = true;
 			}
 
+			// 다음 work 인덱스로 이동
 			curr = w->next;
 		}
 
+		/* [인터럽트 신호 전송 단계] */
+		// 시스템의 모든 완료 큐(CQ)를 돌며 호스트에게 알릴 인터럽트가 있는지 확인
 		for (qidx = 1; qidx <= nvmev_vdev->nr_cq; qidx++) {
 			struct nvmev_completion_queue *cq = nvmev_vdev->cqes[qidx];
 
 #ifdef CONFIG_NVMEV_IO_WORKER_BY_SQ
+// 특정 SQ/CQ 조합을 특정 일꾼이 전담하는 설정이면 담당 여부 확인
 			if ((worker->id) != __get_io_worker(qidx))
 				continue;
 #endif
+			// CQ가 없거나 인터럽트가 비활성화된 경우 스킵
 			if (cq == NULL || !cq->irq_enabled)
 				continue;
 
+			// CQ의 인터럽트 상태를 안전하게 확인하기 위해 뮤텍스 락 시도
 			if (mutex_trylock(&cq->irq_lock)) {
+				// 호스트에게 보낼 인터럽트가 준비된 상태라면
 				if (cq->interrupt_ready == true) {
 #ifdef PERF_DEBUG
 					prev_clock = local_clock();
 #endif
+					// 신호를 보낼 것이므로 플래그를 false로 내림
 					cq->interrupt_ready = false;
+					// 실제로 호스트 OS에 인터럽트 신호(MSI-X 등) 발생시킴
 					nvmev_signal_irq(cq->irq_vector);
 
 #ifdef PERF_DEBUG
+					// 인터럽트 발생 오버헤드 기록 및 통계 출력
 					intr_clock[qidx] += (local_clock() - prev_clock);
 					intr_counter[qidx]++;
 
@@ -761,16 +800,22 @@ static int nvmev_io_worker(void *data)
 					}
 #endif
 				}
+				// 락 해제
 				mutex_unlock(&cq->irq_lock);
 			}
 		}
+
+		/* [휴식 및 스케줄링] */
+		// 일정 시간 동안 작업이 없으면(IDLE_TIMEOUT) 스레드를 잠시 재움
 		if (CONFIG_NVMEVIRT_IDLE_TIMEOUT != 0 &&
 		    time_after(jiffies, last_io_time + (CONFIG_NVMEVIRT_IDLE_TIMEOUT * HZ)))
 			schedule_timeout_interruptible(1);
 		else
+			// 작업이 계속 있더라도 다른 프로세스에게 CPU를 잠시 양보 (시스템 멈춤 방지)
 			cond_resched();
 	}
 
+	// 스레드 종료 시 0 반환
 	return 0;
 }
 
