@@ -8,9 +8,9 @@
 #include "conv_ftl.h"
 
 #define GC_MODE COST_BENEFIT
-#define GREEDY 0
-#define COST_BENEFIT 1
-#define RANDOM 2
+#define GREEDY (0)
+#define COST_BENEFIT (1)
+#define RANDOM (2)
 
 static inline bool last_pg_in_wordline(struct conv_ftl *conv_ftl, struct ppa *ppa)
 {
@@ -116,17 +116,31 @@ static void init_lines(struct conv_ftl *conv_ftl)
 {
 	struct ssdparams *spp = &conv_ftl->ssd->sp;
 	struct line_mgmt *lm = &conv_ftl->lm;
+	struct line_mgmt *slm = &conv_ftl->slm;
 	struct line *line;
 	int i;
 
-	lm->tt_lines = spp->blks_per_pl;
-	NVMEV_ASSERT(lm->tt_lines == spp->tt_lines);
+	if (SLC_CACHE_MODE == UNENABLE_SLC_CACHE){
+		lm->tt_lines = spp->blks_per_pl;
+		NVMEV_ASSERT(lm->tt_lines == spp->tt_lines);
+	}
+	else{
+		lm->tt_lines = spp->blks_per_pl_tlc;
+		NVMEV_ASSERT(lm->tt_lines == spp->tt_lines_tlc);
+	}
 	lm->lines = vmalloc(sizeof(struct line) * lm->tt_lines);
 
 	INIT_LIST_HEAD(&lm->free_line_list);
 	INIT_LIST_HEAD(&lm->full_line_list);
+	/* 
+	static inline void INIT_LIST_HEAD(struct list_head *list)
+	{
+		list->next = list;
+		list->prev = list;
+	} 
+	*/
 
-	lm->victim_line_pq = pqueue_init(spp->tt_lines, victim_line_cmp_pri, victim_line_get_pri,
+	lm->victim_line_pq = pqueue_init(lm->tt_lines, victim_line_cmp_pri, victim_line_get_pri,
 					 victim_line_set_pri, victim_line_get_pos,
 					 victim_line_set_pos);
 
@@ -139,6 +153,9 @@ static void init_lines(struct conv_ftl *conv_ftl)
 			.pos = 0,
 			.entry = LIST_HEAD_INIT(lm->lines[i].entry),
 		};
+		/*
+		LIST_HEAD_INIT : struct list_head my_list = LIST_HEAD_INIT(my_list);
+		*/
 
 		/* initialize all the lines as free lines */
 		list_add_tail(&lm->lines[i].entry, &lm->free_line_list);
@@ -148,6 +165,38 @@ static void init_lines(struct conv_ftl *conv_ftl)
 	NVMEV_ASSERT(lm->free_line_cnt == lm->tt_lines);
 	lm->victim_line_cnt = 0;
 	lm->full_line_cnt = 0;
+
+	//////////
+	if (SLC_CACHE_MODE == ENABLE_SLC_CACHE){
+		slm->tt_lines = spp->blks_per_pl_slc;
+		NVMEV_ASSERT(slm->tt_lines == spp->tt_lines_slc);
+		slm->lines = vmalloc(sizeof(struct line) * slm->tt_lines);
+
+		INIT_LIST_HEAD(&slm->free_line_list);
+		INIT_LIST_HEAD(&slm->full_line_list);
+
+		slm->victim_line_pq = pqueue_init(spp->tt_lines_slc, victim_line_cmp_pri, victim_line_get_pri,
+				victim_line_set_pri, victim_line_get_pos,
+				victim_line_set_pos);
+	
+		slm->free_line_cnt = 0;
+		for (i = 0; i < slm->tt_lines; i++) {
+			slm->lines[i] = (struct line){
+				.id = i,
+				.ipc = 0,
+				.vpc = 0,
+				.pos = 0,
+				.entry = LIST_HEAD_INIT(slm->lines[i].entry),
+			};
+
+			list_add_tail(&slm->lines[i].entry, &slm->free_line_list);
+			slm->free_line_cnt++;
+		}
+
+		NVMEV_ASSERT(slm->free_line_cnt == slm->tt_lines);
+		slm->victim_line_cnt = 0;
+		slm->full_line_cnt = 0;
+	}
 }
 
 static void remove_lines(struct conv_ftl *conv_ftl)
@@ -176,13 +225,29 @@ static struct line *get_next_free_line(struct conv_ftl *conv_ftl)
 	struct line *curline = list_first_entry_or_null(&lm->free_line_list, struct line, entry);
 
 	if (!curline) {
-		NVMEV_ERROR("No free line left in VIRT !!!!\n");
+		NVMEV_ERROR("No free line left in TLC region !!!!\n");
 		return NULL;
 	}
 
 	list_del_init(&curline->entry);
 	lm->free_line_cnt--;
-	NVMEV_DEBUG("%s: free_line_cnt %d\n", __func__, lm->free_line_cnt);
+	NVMEV_DEBUG("TLC region // %s: free_line_cnt %d\n", __func__, lm->free_line_cnt);
+	return curline;
+}
+
+static struct line *get_next_free_line_slc(struct conv_ftl *conv_ftl)
+{
+	struct line_mgmt *slm = &conv_ftl->slm;
+	struct line *curline = list_first_entry_or_null(&slm->free_line_list, struct line, entry);
+
+	if (!curline) {
+		NVMEV_ERROR("No free line left in SLC region !!!!\n");
+		return NULL;
+	}
+
+	list_del_init(&curline->entry);
+	slm->free_line_cnt--;
+	NVMEV_DEBUG("SLC region // %s: free_line_cnt %d\n", __func__, slm->free_line_cnt);
 	return curline;
 }
 
@@ -193,7 +258,21 @@ static struct write_pointer *__get_wp(struct conv_ftl *ftl, uint32_t io_type)
 	} else if (io_type == GC_IO) {
 		return &ftl->gc_wp;
 	}
+	
+	NVMEV_ASSERT(0);
+	return NULL;
+}
 
+static struct write_pointer *__get_wp_slc(struct conv_ftl *ftl, uint32_t io_type)
+{
+	if (io_type == USER_IO) {
+		return &ftl->swp;
+	} else if (io_type == GC_IO) {
+		return &ftl->gc_wp;
+	} else if (io_type == MIGRATION_IO) {
+		return &ftl->wp;
+	}
+	
 	NVMEV_ASSERT(0);
 	return NULL;
 }
@@ -288,12 +367,171 @@ static void advance_write_pointer(struct conv_ftl *conv_ftl, uint32_t io_type)
 	/* 8. 새 라인 할당 */
 	/* current line is used up, pick another empty line */
 	check_addr(wpp->blk, spp->blks_per_pl);
+
 	// 비어있는 새로운 라인을 할당받음 (Free Line -> Active Line)
 	wpp->curline = get_next_free_line(conv_ftl);
 	NVMEV_DEBUG_VERBOSE("wpp: got new clean line %d\n", wpp->curline->id);
-
 	wpp->blk = wpp->curline->id;  // 새 블록 번호 업데이트
 	check_addr(wpp->blk, spp->blks_per_pl);
+
+	/* 9. 무결성 검사 */
+	/* make sure we are starting from page 0 in the super block */
+	NVMEV_ASSERT(wpp->pg == 0);
+	NVMEV_ASSERT(wpp->lun == 0);
+	NVMEV_ASSERT(wpp->ch == 0);
+	/* TODO: assume # of pl_per_lun is 1, fix later */
+	NVMEV_ASSERT(wpp->pl == 0);
+
+out:
+	/* 10. 결과 로그 출력 */
+	NVMEV_DEBUG_VERBOSE("advanced wpp: ch:%d, lun:%d, pl:%d, blk:%d, pg:%d (curline %d)\n",
+			wpp->ch, wpp->lun, wpp->pl, wpp->blk, wpp->pg, wpp->curline->id);
+}
+
+static void advance_write_pointer_slc(struct conv_ftl *conv_ftl, uint32_t io_type)
+{
+	/* 1. 기본 설정 및 포인터 획득 */
+	struct ssdparams *spp = &conv_ftl->ssd->sp;  // SSD 하드웨어 설정값
+	struct line_mgmt *lm = &conv_ftl->lm;
+	struct line_mgmt *slm = &conv_ftl->slm;  // Line Mgmt
+	// 요청 타입(사용자 IO인지 GC IO인지)에 맞는 쓰기 포인터(wpp)를 가져옴
+	struct write_pointer *wpp = __get_wp_slc(conv_ftl, io_type);
+
+	NVMEV_DEBUG_VERBOSE("current wpp: ch:%d, lun:%d, pl:%d, blk:%d, pg:%d\n",
+			wpp->ch, wpp->lun, wpp->pl, wpp->blk, wpp->pg);
+	if (io_type != USER_IO){
+		/* 2. 페이지 번호 증가 */
+		check_addr(wpp->pg, spp->pgs_per_blk);  // 현재 페이지 번호가 블록 범위를 넘지 않는지 검사
+		wpp->pg++;  // 페이지 번호 1 증가 (4KB)
+
+		/* 3. 워드라인 완료 체크 */
+		// pgs_per_oneshotpg: 한 번에 물리적으로 기록되는 페이지 묶음
+		if ((wpp->pg % spp->pgs_per_oneshotpg) != 0)  // 4KB 페이지를 하나 썼는데 아직 WL이 안 끝났다면 그냥 나감(out)
+			goto out;
+		/* 4. 채널 이동 (스트라이핑) */
+		// WL을 다 채웠다면 병렬성을 위해 다음 채널로 이동
+		wpp->pg -= spp->pgs_per_oneshotpg;  // 페이지 번호를 해당 워드라인의 시작점으로 되돌림
+		check_addr(wpp->ch, spp->nchs);  // 채널 범위에 있는지 확인
+		wpp->ch++;  // 다음 채널로 이동
+		if (wpp->ch != spp->nchs)  // 아직 모든 채널을 다 돌지 않았다면 다음 채널에서 쓰기 위해 나감
+			goto out;
+
+			/* 5. LUN 이동 */
+		wpp->ch = 0;  // 모든 채널을 다 돌았으므로 다시 0번 채널로 리셋
+		check_addr(wpp->lun, spp->luns_per_ch);
+		wpp->lun++;  // 해당 채널의 다음 LUN으로 이동
+		/* in this case, we should go to next lun */
+		if (wpp->lun != spp->luns_per_ch)  // 아직 모든 LUN을 다 돌지 않았다면 나감
+			goto out;
+
+		/* 6. 다음 워드라인으로 진입 */
+		wpp->lun = 0;  // 모든 LUN까지 다 돌았으므로 다시 0번 LUN으로 리셋
+		/* 이제 현재 블록 내에서 다음 수직 위치로 페이지 번호를 점프시킴 */
+		/* go to next wordline in the block */
+		wpp->pg += spp->pgs_per_oneshotpg;
+		if (wpp->pg != spp->pgs_per_blk) // 블록의 끝에 도달하지 않았다면 다음 워드라인 시작
+			goto out;
+
+		/* 7. 라인(Line/Superblock) 소모 및 관리 */
+		// 여기까지 왔다면 현재 사용 중인 라인(모든 채널/LUN의 해당 블록들)을 모두 쓴 것
+		wpp->pg = 0;  // 페이지 번호 초기화
+
+		//현재 라인의 유효 페이지 수(vpc)를 확인하여 상태 분류
+		/* move current line to {victim,full} line list */
+		if (wpp->curline->vpc == spp->pgs_per_line) {
+			/* all pgs are still valid, move to full line list */
+			/* 모든 페이지가 유효하다면, 이 라인은 아주 깨끗하게 꽉 찬 상태 (FULL) */
+			NVMEV_ASSERT(wpp->curline->ipc == 0);  // 무효 페이지(ipc)가 0이어야 함
+			list_add_tail(&wpp->curline->entry, &lm->full_line_list);  // Full 라인 리스트에 추가
+			lm->full_line_cnt++;
+			NVMEV_DEBUG_VERBOSE("wpp: move line to full_line_list\n");
+		} else {
+			/* 일부 페이지가 쓰자마자 무효화됨(Overwrite 등): 이 라인은 Victim 후보 */
+			NVMEV_DEBUG_VERBOSE("wpp: line is moved to victim list\n");
+			NVMEV_ASSERT(wpp->curline->vpc >= 0 && wpp->curline->vpc < spp->pgs_per_line);  
+			/* there must be some invalid pages in this line */
+			NVMEV_ASSERT(wpp->curline->ipc > 0);  // 무효 페이지가 최소 하나는 있어야 함
+			// pqueue에 삽입 (victim 후보)
+			pqueue_insert(lm->victim_line_pq, wpp->curline);
+			lm->victim_line_cnt++;
+		}
+
+		/* 8. 새 라인 할당 */
+		/* current line is used up, pick another empty line */
+		check_addr(wpp->blk, spp->blks_per_pl_tlc);
+
+		// 비어있는 새로운 라인을 할당받음 (Free Line -> Active Line)
+		wpp->curline = get_next_free_line(conv_ftl);
+		NVMEV_DEBUG_VERBOSE("wpp: got new clean line %d\n", wpp->curline->id);
+		wpp->blk = wpp->curline->id;  // 새 블록 번호 업데이트
+		check_addr(wpp->blk, spp->blks_per_pl_tlc);
+	} else {
+		/* 2. 페이지 번호 증가 */
+		check_addr(wpp->pg, spp->pgs_per_blk_slc);  // 현재 페이지 번호가 블록 범위를 넘지 않는지 검사
+		wpp->pg++;  // 페이지 번호 1 증가 (4KB)
+
+		/* 3. 워드라인 완료 체크 */
+		// pgs_per_oneshotpg: 한 번에 물리적으로 기록되는 페이지 묶음
+		if ((wpp->pg % spp->pgs_per_oneshotpg_slc) != 0)  // 4KB 페이지를 하나 썼는데 아직 WL이 안 끝났다면 그냥 나감(out)
+			goto out;
+		/* 4. 채널 이동 (스트라이핑) */
+		// WL을 다 채웠다면 병렬성을 위해 다음 채널로 이동
+		wpp->pg -= spp->pgs_per_oneshotpg_slc;  // 페이지 번호를 해당 워드라인의 시작점으로 되돌림
+		check_addr(wpp->ch, spp->nchs);  // 채널 범위에 있는지 확인
+		wpp->ch++;  // 다음 채널로 이동
+		if (wpp->ch != spp->nchs)  // 아직 모든 채널을 다 돌지 않았다면 다음 채널에서 쓰기 위해 나감
+			goto out;
+
+			/* 5. LUN 이동 */
+		wpp->ch = 0;  // 모든 채널을 다 돌았으므로 다시 0번 채널로 리셋
+		check_addr(wpp->lun, spp->luns_per_ch);
+		wpp->lun++;  // 해당 채널의 다음 LUN으로 이동
+		/* in this case, we should go to next lun */
+		if (wpp->lun != spp->luns_per_ch)  // 아직 모든 LUN을 다 돌지 않았다면 나감
+			goto out;
+
+		/* 6. 다음 워드라인으로 진입 */
+		wpp->lun = 0;  // 모든 LUN까지 다 돌았으므로 다시 0번 LUN으로 리셋
+		/* 이제 현재 블록 내에서 다음 수직 위치로 페이지 번호를 점프시킴 */
+		/* go to next wordline in the block */
+		wpp->pg += spp->pgs_per_oneshotpg_slc;
+		if (wpp->pg != spp->pgs_per_blk_slc) // 블록의 끝에 도달하지 않았다면 다음 워드라인 시작
+			goto out;
+
+		/* 7. 라인(Line/Superblock) 소모 및 관리 */
+		// 여기까지 왔다면 현재 사용 중인 라인(모든 채널/LUN의 해당 블록들)을 모두 쓴 것
+		wpp->pg = 0;  // 페이지 번호 초기화
+
+		//현재 라인의 유효 페이지 수(vpc)를 확인하여 상태 분류
+		/* move current line to {victim,full} line list */
+		if (wpp->curline->vpc == spp->pgs_per_line_slc) {
+			/* all pgs are still valid, move to full line list */
+			/* 모든 페이지가 유효하다면, 이 라인은 아주 깨끗하게 꽉 찬 상태 (FULL) */
+			NVMEV_ASSERT(wpp->curline->ipc == 0);  // 무효 페이지(ipc)가 0이어야 함
+			list_add_tail(&wpp->curline->entry, &slm->full_line_list);  // Full 라인 리스트에 추가
+			slm->full_line_cnt++;
+			NVMEV_DEBUG_VERBOSE("wpp: move line to full_line_list\n");
+		} else {
+			/* 일부 페이지가 쓰자마자 무효화됨(Overwrite 등): 이 라인은 Victim 후보 */
+			NVMEV_DEBUG_VERBOSE("wpp: line is moved to victim list\n");
+			NVMEV_ASSERT(wpp->curline->vpc >= 0 && wpp->curline->vpc < spp->pgs_per_line_slc);  
+			/* there must be some invalid pages in this line */
+			NVMEV_ASSERT(wpp->curline->ipc > 0);  // 무효 페이지가 최소 하나는 있어야 함
+			// pqueue에 삽입 (victim 후보)
+			pqueue_insert(slm->victim_line_pq, wpp->curline);
+			slm->victim_line_cnt++;
+		}
+
+		/* 8. 새 라인 할당 */
+		/* current line is used up, pick another empty line */
+		check_addr(wpp->blk, spp->blks_per_pl_slc);
+
+		// 비어있는 새로운 라인을 할당받음 (Free Line -> Active Line)
+		wpp->curline = get_next_free_line_slc(conv_ftl);
+		NVMEV_DEBUG_VERBOSE("wpp: got new clean line %d\n", wpp->curline->id);
+		wpp->blk = wpp->curline->id;  // 새 블록 번호 업데이트
+		check_addr(wpp->blk, spp->blks_per_pl_slc);
+	}
 
 	/* 9. 무결성 검사 */
 	/* make sure we are starting from page 0 in the super block */
@@ -413,7 +651,12 @@ void conv_init_namespace(struct nvmev_ns *ns, uint32_t id, uint64_t size, void *
 	const uint32_t nr_parts = SSD_PARTITIONS;  // SSD를 나눌 파티션 개수 (기본적으로 병렬 처리용)
 
 	/* 1. 파라미터 초기화 */
-	ssd_init_params(&spp, size, nr_parts);
+	if (SLC_CACHE_MODE == UNENABLE_SLC_CACHE){
+		ssd_init_params(&spp, size, nr_parts);
+	}
+	else{
+		ssd_init_params_slc(&spp, size, nr_parts);
+	}
 	conv_init_params(&cpp);
 
 	/* 2. FTL 및 SSD 객체 할당 */
@@ -497,8 +740,19 @@ static inline bool valid_ppa(struct conv_ftl *conv_ftl, struct ppa *ppa)
 		return false;
 	if (blk < 0 || blk >= spp->blks_per_pl)
 		return false;
-	if (pg < 0 || pg >= spp->pgs_per_blk)
-		return false;
+	if (SLC_CACHE_MODE == UNENABLE_SLC_CACHE) {
+		if (pg < 0 || pg >= spp->pgs_per_blk)
+			return false;
+	} else {
+		if (blk < spp->blks_per_pl_slc){
+			if (pg < 0 || pg >= spp->pgs_per_blk_slc)
+				return false;
+		}
+		else {
+			if (pg < 0 || pg >= spp->pgs_per_blk)
+				return false;
+		}
+	}
 
 	return true;
 }
@@ -935,25 +1189,27 @@ static bool conv_read(struct nvmev_ns *ns, struct nvmev_request *req, struct nvm
 	struct ssdparams *spp = &conv_ftl->ssd->sp;
 
 	struct nvme_command *cmd = req->cmd;
-	uint64_t lba = cmd->rw.slba;
-	uint64_t nr_lba = (cmd->rw.length + 1);
-	uint64_t start_lpn = lba / spp->secs_per_pg;
-	uint64_t end_lpn = (lba + nr_lba - 1) / spp->secs_per_pg;
+	uint64_t lba = cmd->rw.slba;	// 요청된 시작 LBA
+	uint64_t nr_lba = (cmd->rw.length + 1);	// 요청된 LBA 개수
+	uint64_t start_lpn = lba / spp->secs_per_pg;	// 시작 논리 페이지 번호(LPN)
+	uint64_t end_lpn = (lba + nr_lba - 1) / spp->secs_per_pg;	// 끝 논리 페이지 번호(LPN)
 	uint64_t lpn;
-	uint64_t nsecs_start = req->nsecs_start;
-	uint64_t nsecs_completed, nsecs_latest = nsecs_start;
+	uint64_t nsecs_start = req->nsecs_start;	// 요청 시작 시간 (나노초)
+	uint64_t nsecs_completed, nsecs_latest = nsecs_start;	// 완료 시간 계산용 변수
 	uint32_t xfer_size, i;
-	uint32_t nr_parts = ns->nr_parts;
+	uint32_t nr_parts = ns->nr_parts;	// 파티션 (FTL 인스턴스) 개수
 
-	struct ppa prev_ppa;
-	struct nand_cmd srd = {
-		.type = USER_IO,
-		.cmd = NAND_READ,
-		.stime = nsecs_start,
-		.interleave_pci_dma = true,
+	struct ppa prev_ppa;	// 이전 페이지의 물리 주소 (병합 확인용)
+	struct nand_cmd srd = {	// 낸드에 보낼 실제 명령 구조체
+		.type = USER_IO,	// 사용자 요청 타입
+		.cmd = NAND_READ,	// 낸드 읽기 작업
+		.stime = nsecs_start,	// 시작 시간
+		.interleave_pci_dma = true,	// PCI DMA 인터리빙 허용
 	};
 
 	NVMEV_ASSERT(conv_ftls);
+
+	/* 2. 요청 범위 유효성 검사 */
 	NVMEV_DEBUG_VERBOSE("%s: start_lpn=%lld, len=%lld, end_lpn=%lld", __func__, start_lpn, nr_lba, end_lpn);
 	if ((end_lpn / nr_parts) >= spp->tt_pgs) {
 		NVMEV_ERROR("%s: lpn passed FTL range (start_lpn=%lld > tt_pgs=%ld)\n", __func__,
@@ -961,25 +1217,32 @@ static bool conv_read(struct nvmev_ns *ns, struct nvmev_request *req, struct nvm
 		return false;
 	}
 
+	/* 3. 펌웨어 오버헤드(지연시간) 추가 */
+	// 데이터 크기에 따라 펌웨어가 처리하는 기본 지연시간을 시작 시간에 더함
 	if (LBA_TO_BYTE(nr_lba) <= (KB(4) * nr_parts)) {
-		srd.stime += spp->fw_4kb_rd_lat;
+		srd.stime += spp->fw_4kb_rd_lat; // 4KB 이하 소량 데이터 지연
 	} else {
-		srd.stime += spp->fw_rd_lat;
+		srd.stime += spp->fw_rd_lat; // 대량 데이터 지연
 	}
 
+	/* 4. 루프: 파티션별 / LPN별 읽기 처리 (스트라이핑 고려) */
 	for (i = 0; (i < nr_parts) && (start_lpn <= end_lpn); i++, start_lpn++) {
-		conv_ftl = &conv_ftls[start_lpn % nr_parts];
+		conv_ftl = &conv_ftls[start_lpn % nr_parts];	// 해당 LPN을 담당하는 FTL 인스턴스 선택
 		xfer_size = 0;
-		prev_ppa = get_maptbl_ent(conv_ftl, start_lpn / nr_parts);
+		prev_ppa = get_maptbl_ent(conv_ftl, start_lpn / nr_parts);	// 첫 번째 PPA 주소 획득
 
 		/* normal IO read path */
+		/* 실제 데이터가 담긴 물리 주소를 찾아 낸드 명령 생성 */
 		for (lpn = start_lpn; lpn <= end_lpn; lpn += nr_parts) {
 			uint64_t local_lpn;
 			struct ppa cur_ppa;
 
-			local_lpn = lpn / nr_parts;
-			cur_ppa = get_maptbl_ent(conv_ftl, local_lpn);
+			local_lpn = lpn / nr_parts;	// 해당 FTL 내부에서의 로컬 LPN
+			cur_ppa = get_maptbl_ent(conv_ftl, local_lpn);	// 매핑 테이블에서의 PPA 조회
+
+			/* 5. 매핑 여부 및 주소 유효성 검사 (valid-ppa 사용) */
 			if (!mapped_ppa(&cur_ppa) || !valid_ppa(conv_ftl, &cur_ppa)) {
+				// 매핑이 안 되어 있다면 (데이터가 써진 적 없음) 그냥 건너뜀
 				NVMEV_DEBUG_VERBOSE("lpn 0x%llx not mapped to valid ppa\n", local_lpn);
 				NVMEV_DEBUG_VERBOSE("Invalid ppa,ch:%d,lun:%d,blk:%d,pl:%d,pg:%d\n",
 					    cur_ppa.g.ch, cur_ppa.g.lun, cur_ppa.g.blk,
@@ -988,24 +1251,31 @@ static bool conv_read(struct nvmev_ns *ns, struct nvmev_request *req, struct nvm
 			}
 
 			// aggregate read io in same flash page
+			/* 6. 동일 플래시 페이지 병합 (최적화) */
+			// 연속된 LPN이 우연히 같은 물리 페이지에 있다면, 여러 번 읽지 않고 크기만 늘림
 			if (mapped_ppa(&prev_ppa) &&
 			    is_same_flash_page(conv_ftl, cur_ppa, prev_ppa)) {
 				xfer_size += spp->pgsz;
 				continue;
 			}
 
+			/* 7. 이전까지 쌓인 읽기 요청을 실제 낸드 시뮬레이터로 전달 */
 			if (xfer_size > 0) {
 				srd.xfer_size = xfer_size;
 				srd.ppa = &prev_ppa;
+				// ssd_advance_nand: 실제 낸드 미디어의 비지 타임(Read Latency)을 계산
 				nsecs_completed = ssd_advance_nand(conv_ftl->ssd, &srd);
+				// 여러 채널에서 병렬로 읽으므로, 가장 늦게 끝나는 시간을 기록
 				nsecs_latest = max(nsecs_completed, nsecs_latest);
 			}
 
+			/* 다음 요청 준비 */
 			xfer_size = spp->pgsz;
 			prev_ppa = cur_ppa;
 		}
 
 		// issue remaining io
+		/* 루프 종료 후 남은 마지막 요청 처리 */
 		if (xfer_size > 0) {
 			srd.xfer_size = xfer_size;
 			srd.ppa = &prev_ppa;
@@ -1014,10 +1284,12 @@ static bool conv_read(struct nvmev_ns *ns, struct nvmev_request *req, struct nvm
 		}
 	}
 
-	ret->nsecs_target = nsecs_latest;
+	/* 9. 최종 결과 반환 */
+	ret->nsecs_target = nsecs_latest;  // 전체 읽기가 완료될 예상 시점
 	ret->status = NVME_SC_SUCCESS;
 	return true;
 }
+
 // 실제복사는 io.c에서, conv-write는 복사행위를 계산하는 용도만
 static bool conv_write(struct nvmev_ns *ns, struct nvmev_request *req, struct nvmev_result *ret)
 {

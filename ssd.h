@@ -7,6 +7,11 @@
 #include "pqueue/pqueue.h"
 #include "ssd_config.h"
 #include "channel_model.h"
+
+#define SLC_CACHE_MODE ENABLE_SLC_CACHE
+#define UNENABLE_SLC_CACHE (0)
+#define ENABLE_SLC_CACHE (1)
+
 /*
     Default malloc size (when sector size is 512B)
     Channel = 40 * 8 = 320
@@ -35,6 +40,7 @@ enum {
 enum {
 	USER_IO = 0,
 	GC_IO = 1,
+	MIGRATION_IO = 2,
 };
 
 enum {
@@ -150,11 +156,11 @@ struct ssdparams {
 	int secs_per_pg; /* # of sectors per page */
 	int pgsz; /* mapping unit size in bytes*/
 	int pgs_per_flashpg; /* # of pgs per flash page */
-	int flashpgs_per_blk; /* # of flash pages per block */
+	int flashpgs_per_blk; /* O# of flash pages per block */
 	int pgs_per_oneshotpg; /* O# of pgs per oneshot page */
 	int oneshotpgs_per_blk; /* X# of oneshot pages per block */
 	int pgs_per_blk; /* O# of pages per block */
-	int blks_per_pl; /* X# of blocks per plane */
+	int blks_per_pl; /* X# of blocks per plane */ // 얘만 total 계산해야, 윗부분은 tlc 말하거나 공통, 아랫부분은 공통
 	int pls_per_lun; /* X# of planes per LUN (Die) */
 	int luns_per_ch; /* X# of LUNs per channel */
 	int nchs; /* X# of channels in the SSD */
@@ -208,6 +214,24 @@ struct ssdparams {
 	unsigned long tt_luns; /* total # of LUNs in the SSD */
 
 	unsigned long long write_buffer_size;
+	///////////////////
+	int flashpgs_per_blk_slc;
+	int pgs_per_oneshotpg_slc;
+	int pgs_per_blk_slc;
+
+	int pg_4kb_rd_lat_slc;
+	int pg_rd_lat_slc;
+	int pg_wr_lat_slc;
+	int blk_er_lat_slc;
+
+	unsigned long secs_per_blk_slc;
+	unsigned long blks_per_pl_slc;
+	unsigned long blks_per_pl_tlc;
+
+	unsigned long pgs_per_line_slc;
+	unsigned long secs_per_line_slc;
+	unsigned long tt_lines_slc;
+	unsigned long tt_lines_tlc;
 };
 
 struct ssd {
@@ -254,6 +278,7 @@ static inline uint32_t get_cell(struct ssd *ssd, struct ppa *ppa)
 }
 
 void ssd_init_params(struct ssdparams *spp, uint64_t capacity, uint32_t nparts);
+void ssd_init_params_slc(struct ssdparams *spp, uint64_t capacity, uint32_t nparts);
 void ssd_init(struct ssd *ssd, struct ssdparams *spp, uint32_t cpu_nr_dispatcher);
 void ssd_remove(struct ssd *ssd);
 

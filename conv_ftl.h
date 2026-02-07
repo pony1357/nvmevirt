@@ -8,6 +8,7 @@
 #include "ssd_config.h"
 #include "ssd.h"
 
+
 struct convparams {
 	uint32_t gc_thres_lines;
 	uint32_t gc_thres_lines_high;
@@ -67,8 +68,13 @@ struct conv_ftl {  // 각 partition의 LBA -> PPA
 	struct line_mgmt lm;
 	struct write_flow_control wfc; // write credit: line별 남은 페이지수, 쓰기흐름 제어장치 - 호스트의 요청속도를 GC 속도가 못따라가면 SSD가 뻗어버릴 수 있으므로 GC 상태에 따라 호스트의 쓰기 속도 조절하는 용도
 
-	// kimi added
+	/* kimi added */
+	// garbage collection
 	uint64_t gc_cnt, pg_cnt;
+	
+	// slc cache
+	struct line_mgmt slm;
+	struct write_pointer swp;
 };
 
 void conv_init_namespace(struct nvmev_ns *ns, uint32_t id, uint64_t size, void *mapped_addr,
